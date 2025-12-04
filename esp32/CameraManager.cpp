@@ -39,6 +39,7 @@ int CameraManager::configCamera() {
     config.frame_size = FRAMESIZE_VGA;
     config.jpeg_quality = 10;
     config.fb_count = 2;
+    config.grab_mode = CAMERA_GRAB_LATEST;
   } else {
     config.frame_size = FRAMESIZE_QVGA;
     config.jpeg_quality = 12;

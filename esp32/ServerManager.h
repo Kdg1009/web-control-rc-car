@@ -13,12 +13,14 @@ public:
     void update(unsigned long now);
 
 private:
+    void wifiInit();
     void handleRoot();
     void handleStreamRequest();
     void handleControlMsg();
     void handleIPMsg() const;
     void handleServerStartMsg();
     void handleWiFiLostMsg();
+    bool wifiStateChanged();
 
     struct StreamClient {
         WiFiClient client;
@@ -26,7 +28,9 @@ private:
         unsigned long lastFrameTime = 0;
     };
 
+    bool use_sta = false;
     bool wifi_connected = false;
+    bool prev_wifi_connected = false;
     bool _running = false;
 
     WebServer server;
@@ -38,8 +42,6 @@ private:
     unsigned long lastIPMsgTime = 0;
 
     const unsigned long streamInterval = 120;     // ~8 FPS
-    const unsigned long controlMsInterval = 100; // 10 FPS
-    const unsigned long ipMsInterval = 5000;     // 0.2 FPS
 
     int speed = 0;
     int dir = 0;

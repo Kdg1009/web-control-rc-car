@@ -1,40 +1,38 @@
 #include "ServerManager.h"
 #include "secret.h"
 
-#ifdef STA
-void wifiInit(bool& wifi_connected) {
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+void ServerManager::wifiInit() {
+  WiFi.begin(WIFI_SSID_STA, WIFI_PASSWORD_STA);
   int trials = 0;
 
-  while (WiFi.status() != WL_CONNECTED && trials < 10) {
+  while (WiFi.status() != WL_CONNECTED && trials < 0) {
     delay(300);
     ++trials;
   }
 
   wifi_connected = (WiFi.status() == WL_CONNECTED);
-}
-#endif
-#ifdef AP
-void wifiInit(bool& wifi_connected) {
-  WiFi.mode(WIFI_AP);
-  WiFi.softAP(WIFI_SSID, WIFI_PASSWORD);
+  if (false) {
+    use_sta = true;
 
-  IPAddress IP = WiFi.softAPIP();
-  Serial.print("IP Address(AP): ");
-  Serial.print(IP);
+  } else { // use AP mode
+    WiFi.mode(WIFI_AP);
+    WiFi.softAP(WIFI_SSID_AP, WIFI_PASSWORD_AP);
 
-  wifi_connected = true;
+    String IP = WiFi.softAPIP().toString();
+    Serial.print("IP ");
+    Serial.println(IP);
+    wifi_connected = true;
+    prev_wifi_connected = true; // always wifiStateChanged() = false
+  }
 }
-#endif
 
 ServerManager::ServerManager() : server(80) {}
 
 void ServerManager::init() {
     Serial.begin(115200); // esp32 doesn't support serial1
 
-    wifi_connected = (WiFi.status() == WL_CONNECTED);
-    wifiInit(wifi_connected);
-    handleIPMsg();
+    wifiInit();
+    if (use_sta) { handleIPMsg(); }
 
     cam.init();
 
@@ -55,24 +53,21 @@ void ServerManager::update(unsigned long now) {
     if (!_running) return;
 
     server.handleClient();
-    //newly added
     yield(); // allow wifi to breath
-    //newly added
 
     // Stream MJPEG
     if (streamClient.active) {
-        if (!streamClient.client.connected()) {
-            streamClient.client.stop();
+        if (!streamClient.client || !streamClient.client.connected()) {
+            if (streamClient.client) {
+              streamClient.client.stop();
+            }
             streamClient.active = false;
             return;
         }
-
         if (now - streamClient.lastFrameTime > streamInterval) {
             camera_fb_t* fb = esp_camera_fb_get();
             if (!fb) {
-              //newly added
               yield();
-              //newly added
               return;
             }
 
@@ -84,17 +79,12 @@ void ServerManager::update(unsigned long now) {
 
             esp_camera_fb_return(fb);
             streamClient.lastFrameTime = now;
-
-            // newly added
             yield(); // avoid WDT and socket starvation
-            // newly added
         }
     }
 
-    // periodic IP print
-    if (now - lastIPMsgTime > ipMsInterval) {
-        lastIPMsgTime = now;
-        handleIPMsg();
+    if (wifiStateChanged() && wifi_connected) {
+      handleIPMsg(); // send IP msg only when wifi newly connected
     }
 }
 
@@ -103,16 +93,19 @@ void ServerManager::handleRoot() {
 }
 
 void ServerManager::handleStreamRequest() {
+    // Stop any existing stream first
+    if (streamClient.active && streamClient.client) {
+      streamClient.client.stop();
+      streamClient.active = false;
+    }
+    
     WiFiClient client = server.client();
     if (!client) return;
 
     client.println("HTTP/1.1 200 OK");
     client.println("Content-Type: multipart/x-mixed-replace; boundary=frame");
-    // newly added
     client.println("Cache-Control: no-cache");
     client.println("Pragma: no-cache");
-    // newly added
-    client.println("Connection: close");
     client.println();
 
     streamClient.client = client;
@@ -149,6 +142,14 @@ void ServerManager::handleServerStartMsg() {
 
 void ServerManager::handleWiFiLostMsg() {
     Serial.println("WIFI LOST");
+    wifi_connected = false;
+}
+
+bool ServerManager::wifiStateChanged() {
+  bool isChanged = prev_wifi_connected != wifi_connected;
+  prev_wifi_connected = wifi_connected;
+  wifi_connected = (WiFi.status() == WL_CONNECTED);
+  return isChanged;
 }
 
 // HTML page with embedded JavaScript
@@ -169,7 +170,7 @@ const char* index_html PROGMEM = R"rawliteral(
       font-family: Arial, sans-serif;
       background-color: #1a1a1a;
       color: #ffffff;
-      overflow: hidden;
+      overflow: auto;
     }
     .container {
       display: flex;
@@ -412,7 +413,8 @@ const char* index_html PROGMEM = R"rawliteral(
         downPressed = true;
         btnDown.classList.add('pressed');
         sendCommand();
-      } else if (e.key === 'ArrowLeft' && !leftPressed) {
+      }
+      if (e.key === 'ArrowLeft' && !leftPressed) {
         leftPressed = true;
         btnLeft.classList.add('pressed');
         sendCommand();
@@ -432,7 +434,8 @@ const char* index_html PROGMEM = R"rawliteral(
         downPressed = false;
         btnDown.classList.remove('pressed');
         sendCommand();
-      } else if (e.key === 'ArrowLeft' && leftPressed) {
+      }
+      if (e.key === 'ArrowLeft' && leftPressed) {
         leftPressed = false;
         btnLeft.classList.remove('pressed');
         sendCommand();
@@ -443,12 +446,17 @@ const char* index_html PROGMEM = R"rawliteral(
       }
     });
 
+    let isCommandPending = false;
+
     function sendCommand() {
+      if (isCommandPending) return; // Skip if previous request still pending
+      isCommandPending = true;
+
       // Determine direction
       let dir = 2; // stop
       if (upPressed) {
         dir = 0; // forward
-      } else if (downPressed && !upPressed) {
+      } else if (downPressed) {
         dir = 1; // backward
       }
 
@@ -456,15 +464,19 @@ const char* index_html PROGMEM = R"rawliteral(
       let steer = 105; // straight
       if (leftPressed) {
         steer = 90; // left
-      } else if (rightPressed && !leftPressed) {
+      } else if (rightPressed) {
         steer = 120; // right
       }
 
       // Send command to server
       fetch(`/control?speed=${currentSpeed}&dir=${dir}&steer=${steer}`)
-        .catch(err => console.error('Error:', err));
+        .then(() => { isCommandPending = false; })
+        .catch(err => {
+          console.error('Error:', err);
+          isCommandPending = false;
+        });
     }
-  setInterval(sendCommand, 50);
+  setInterval(sendCommand, 120);
   </script>
 </body>
 </html>

@@ -1,9 +1,11 @@
 #include "SerialRxManager.h"
 
+#define SERIAL Serial1
+
 SerialRxManager::SerialRxManager() {}
 
 void SerialRxManager::init() {
-    Serial1.begin(baudRate); // Serial1 is for uart. Serial is for usb
+    SERIAL.begin(baudRate); // Serial1 is for uart. Serial is for usb
     inputBuffer.reserve(64);
     _running = true;
 }
@@ -13,8 +15,8 @@ void SerialRxManager::update(unsigned long now) {
     if (!_running) return;
 
     // if there is serial input, read it and store it into buffer
-    while (Serial1.available() > 0) {
-        char c = Serial1.read();
+    while (SERIAL.available() > 0) {
+        char c = SERIAL.read();
         if (c == '\n') {
             if ( dataReceivedCallback && inputBuffer.length() > 0 ) dataReceivedCallback(inputBuffer);
             inputBuffer = "";
@@ -27,9 +29,9 @@ void SerialRxManager::update(unsigned long now) {
 void SerialRxManager::setBaudRate(unsigned long baudRate) {
     this->baudRate = baudRate;
     this->_running = false;
-    Serial1.end();
+    SERIAL.end();
     delay(10);
-    Serial1.begin(baudRate);
+    SERIAL.begin(baudRate);
     this->_running = true;
 }
 
